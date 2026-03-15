@@ -1,0 +1,32 @@
+# ==============================================================================
+# CHAINFLOW AI — app/core/model_def.py
+# CNN+LSTM class — MUST be byte-identical to the class in Cell 10.
+# ==============================================================================
+
+import torch, torch.nn as nn
+
+class CNN_LSTM(nn.Module):
+    def __init__(self, n_feat=40, cnn_ch=64, lstm_h=128, lstm_layers=2, dropout=0.3):
+        super().__init__()
+        self.conv3 = nn.Sequential(
+            nn.Conv1d(n_feat, cnn_ch, 3, padding=1),
+            nn.BatchNorm1d(cnn_ch), nn.GELU(), nn.Dropout(dropout/2),
+        )
+        self.conv5 = nn.Sequential(
+            nn.Conv1d(n_feat, cnn_ch, 5, padding=2),
+            nn.BatchNorm1d(cnn_ch), nn.GELU(), nn.Dropout(dropout/2),
+        )
+        self.lstm = nn.LSTM(cnn_ch*2, lstm_h, lstm_layers,
+                            batch_first=True,
+                            dropout=dropout if lstm_layers > 1 else 0)
+        self.head = nn.Sequential(
+            nn.LayerNorm(lstm_h), nn.Linear(lstm_h, 64),
+            nn.GELU(), nn.Dropout(dropout), nn.Linear(64, 1),
+        )
+
+    def forward(self, x):           # x: (B, T, F)
+        xt = x.permute(0, 2, 1)
+        c  = torch.cat([self.conv3(xt), self.conv5(xt)], 1)
+        c  = c.permute(0, 2, 1)
+        out, _ = self.lstm(c)
+        return self.head(out[:, -1, :]).squeeze(-1)
