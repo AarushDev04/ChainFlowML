@@ -1,0 +1,32 @@
+# ChainFlow AI — requirements.txt
+# Production server dependencies (Colab handles its own installs)
+
+# API
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+pydantic==2.7.0
+httpx==0.27.0
+
+# ML inference
+lightgbm==4.3.0
+xgboost==2.0.3
+scikit-learn==1.4.2
+joblib==1.4.0
+numpy==1.26.4
+pandas==2.2.2
+scipy==1.13.0
+
+# Deep learning (CPU — for GPU swap torch+cpu → torch+cu121)
+torch==2.2.2+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# LLM
+transformers==4.40.0
+accelerate==0.29.0
+bitsandbytes==0.43.0
+sentencepiece==0.2.0
+
+# Vector DB + embeddings
+chromadb==0.5.0
+sentence-transformers==2.7.0
