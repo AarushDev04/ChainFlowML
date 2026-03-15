@@ -1,0 +1,128 @@
+# ==============================================================================
+# CHAINFLOW AI — app/routers/llm.py
+# ==============================================================================
+
+from __future__ import annotations
+
+import time
+from typing import List, Optional
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+
+from app.services.rag import retrieve, generate
+
+router = APIRouter(prefix="/llm", tags=["LLM"])
+
+
+class QueryRequest(BaseModel):
+    query:       str                  = Field(..., example="Which model had the best R²?")
+    top_k:       int                  = Field(5)
+    max_tokens:  int                  = Field(512)
+    session_id:  Optional[str]        = Field(None)
+    collections: Optional[List[str]]  = Field(None)
+
+
+class ChatMessage(BaseModel):
+    role:    str = Field(..., example="user")
+    content: str = Field(..., example="What was the MAPE of the TCN backbone?")
+
+
+class ChatRequest(BaseModel):
+    messages:    List[ChatMessage]
+    top_k:       int           = Field(4)
+    max_tokens:  int           = Field(512)
+    session_id:  Optional[str] = Field(None)
+
+
+@router.post("/query")
+async def llm_query(req: QueryRequest):
+    """
+    Single-turn RAG query.
+    If a prediction was recently run in this session, prediction results
+    surface first via chainflow_prediction_memory collection.
+    """
+    t0 = time.time()
+
+    # Bias retrieval toward session's prediction memory if session_id given
+    cols = req.collections
+    if req.session_id and not cols:
+        cols = None  # all collections — prediction_memory is first in priority list
+
+    chunks = retrieve(req.query, top_k=req.top_k, collections=cols)
+    if not chunks:
+        raise HTTPException(503, "ChromaDB not loaded or no matching documents")
+
+    answer, gen_t = generate(req.query, chunks, req.max_tokens)
+    return {
+        "query"        : req.query,
+        "answer"       : answer,
+        "session_id"   : req.session_id,
+        "sources"      : [
+            {"collection": c["collection"],
+             "distance"  : round(c["distance"], 4),
+             "preview"   : c["text"][:120]}
+            for c in chunks
+        ],
+        "latency_s"    : round(time.time()-t0, 2),
+        "generate_time": gen_t,
+        "chunks_used"  : len(chunks),
+    }
+
+
+@router.post("/chat")
+async def llm_chat(req: ChatRequest):
+    """
+    Multi-turn chat. Retrieves context from the latest user message.
+    Previous turns are included in the prompt so the LLM maintains
+    conversation history.
+    """
+    from app.core import state
+    from app.core.config import SYSTEM_PROMPT, LLM_MAX_CTX
+    import torch
+
+    R = state.R
+    if not R["llm"]:
+        raise HTTPException(503, "LLM not loaded")
+
+    last_user = next(
+        (m.content for m in reversed(req.messages) if m.role == "user"), ""
+    )
+    chunks  = retrieve(last_user, top_k=req.top_k)
+    context = "\n\n".join(
+        [f"[{c['collection']}]\n{c['text']}" for c in chunks]
+    )
+
+    # Build full conversation string in ChatQA format
+    conversation = f"System: {SYSTEM_PROMPT}\n\nContext:\n{context}\n\n"
+    for msg in req.messages:
+        role = "User" if msg.role == "user" else "Assistant"
+        conversation += f"{role}: {msg.content}\n\n"
+    conversation += "Assistant:"
+
+    inputs    = R["tokenizer"](
+        conversation, return_tensors="pt",
+        truncation=True, max_length=LLM_MAX_CTX,
+    ).to(R["device"])
+    input_len = inputs["input_ids"].shape[1]
+
+    t0 = time.time()
+    with torch.no_grad():
+        out = R["llm"].generate(
+            **inputs, max_new_tokens=req.max_tokens,
+            temperature=0.1, do_sample=False,
+            pad_token_id=R["tokenizer"].eos_token_id,
+            eos_token_id=R["tokenizer"].eos_token_id,
+            repetition_penalty=1.1,
+        )
+    answer = R["tokenizer"].decode(
+        out[0][input_len:], skip_special_tokens=True
+    ).strip()
+
+    return {
+        "answer"      : answer,
+        "session_id"  : req.session_id,
+        "turn"        : len([m for m in req.messages if m.role == "user"]),
+        "chunks_used" : len(chunks),
+        "latency_s"   : round(time.time()-t0, 2),
+    }
