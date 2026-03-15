@@ -1,0 +1,66 @@
+# ==============================================================================
+# CHAINFLOW AI — docker-compose.yml
+# Run: docker compose up --build
+# GPU : docker compose --profile gpu up
+# ==============================================================================
+
+version: "3.9"
+
+services:
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: chainflow-api:latest
+    container_name: chainflow_api
+    ports:
+      - "8000:8000"
+    environment:
+      ARTIFACTS_ROOT  : /app/artifacts
+      MODEL_DIR       : /app/artifacts/models
+      CHROMA_DIR      : /app/artifacts/chromadb
+      RESULTS_DIR     : /app/artifacts/results
+      MEMORY_DIR      : /tmp/chainflow_memory
+      LLM_MODEL_ID    : nvidia/Llama3-ChatQA-1.5-7B
+      LLM_USE_4BIT    : "true"
+      LLM_MAX_CTX     : "4096"
+      LLM_MAX_TOKENS  : "512"
+      SEQ_LEN         : "21"
+      API_WORKERS     : "1"
+    volumes:
+      # Extract chainflow_artifacts.zip here before docker compose up
+      - ./artifacts:/app/artifacts:ro
+      - chainflow_memory:/tmp/chainflow_memory
+      - chainflow_logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - chainflow_net
+    deploy:
+      resources:
+        limits:
+          memory: 16G   # ChatQA-7B in 4-bit needs ~6GB; LGB+scalers ~1GB
+
+  # GPU variant — run with: docker compose --profile gpu up
+  api_gpu:
+    extends:
+      service: api
+    profiles: ["gpu"]
+    container_name: chainflow_api_gpu
+    environment:
+      LLM_USE_4BIT: "true"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  chainflow_memory:
+  chainflow_logs:
+
+networks:
+  chainflow_net:
+    driver: bridge
